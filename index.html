@@ -310,8 +310,10 @@
       <button id="viewMonthBtn" class="active">Mois</button>
       <button id="viewListBtn">Liste</button>
     </div>
+    <input type="text" id="searchInput" placeholder="🔎 Rechercher..." style="border:1px solid var(--border); background:var(--surface); border-radius:999px; padding:7px 14px; font-size:12.5px; font-family:inherit; min-width:150px;">
     <div class="chips" id="catChips"></div>
     <button type="button" class="import-btn" id="importBtn">📥 Importer un planning</button>
+    <button type="button" class="import-btn" id="manageImportsBtn">🗂️ Mes imports</button>
   </div>
 
   <section id="dayView" style="display:none;">
@@ -471,6 +473,10 @@
         <label>Jusqu'au</label>
         <input type="date" id="f_recur_end">
       </div>
+      <div class="field" id="recurrencePreviewField" style="display:none;">
+        <label>Semaines à inclure</label>
+        <div id="recurrencePreviewList" style="max-height:170px; overflow-y:auto; display:flex; flex-direction:column; gap:6px; border:1.5px solid var(--border); border-radius:var(--radius-sm); padding:8px;"></div>
+      </div>
       <div class="field">
         <label>Lieu (optionnel)</label>
         <input type="text" id="f_lieu" placeholder="Ex : École, Maison, Grand-mère...">
@@ -566,6 +572,18 @@
         <button type="button" class="btn ghost" id="cancelImport">Annuler</button>
         <button type="button" class="btn primary" id="confirmImport">Importer</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- Manage imports -->
+<div class="overlay" id="manageImportsOverlay">
+  <div class="modal">
+    <h2>Mes imports</h2>
+    <p style="color:var(--ink-soft); font-size:13.5px; margin-top:-6px;">Retrouve ici chaque fichier importé pour le supprimer entièrement si besoin.</p>
+    <div id="importsList" style="display:flex; flex-direction:column; gap:10px;"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn ghost" id="closeManageImports">Fermer</button>
     </div>
   </div>
 </div>
@@ -994,9 +1012,25 @@ function relativeDayLabel(dateStr){
 }
 
 /* ================= FILTERING ================= */
+let searchQuery = '';
 function visibleEvents(){
-  return events.filter(e=>activeCats.has(e.categorie));
+  let list = events.filter(e=>activeCats.has(e.categorie));
+  if(searchQuery){
+    const q = searchQuery.toLowerCase();
+    list = list.filter(e=>
+      (e.titre||'').toLowerCase().includes(q) ||
+      (e.lieu||'').toLowerCase().includes(q) ||
+      (e.description||'').toLowerCase().includes(q)
+    );
+  }
+  return list;
 }
+let searchDebounce = null;
+document.getElementById('searchInput').addEventListener('input', (e)=>{
+  clearTimeout(searchDebounce);
+  const val = e.target.value;
+  searchDebounce = setTimeout(()=>{ searchQuery = val.trim(); renderAll(); }, 200);
+});
 
 /* ================= MONTH VIEW ================= */
 function renderMonth(){
@@ -1071,6 +1105,7 @@ function buildEventCard(ev){
         ${ev.lieu ? `<span>📍 ${escapeHtml(ev.lieu)}</span>` : ''}
         ${ev.piece_jointe_nom ? `<span>📎 ${escapeHtml(ev.piece_jointe_nom)}</span>` : ''}
         ${ev.recurrence_group ? `<span>🔁 récurrent</span>` : ''}
+        ${ev.import_batch ? `<span>📥 importé</span>` : ''}
         ${ev.cree_par ? `<span>créé par ${escapeHtml(ev.cree_par)}</span>` : ''}
         ${ev.modifie_par && ev.modifie_par !== ev.cree_par ? `<span>modifié par ${escapeHtml(ev.modifie_par)}</span>` : ''}
       </div>
@@ -1195,10 +1230,10 @@ document.getElementById('viewMonthBtn').addEventListener('click', ()=>switchView
 document.getElementById('viewListBtn').addEventListener('click', ()=>switchView('list'));
 
 function renderAll(){
-  renderDay();
-  renderWeek();
-  renderMonth();
-  renderList();
+  if(currentView==='day') renderDay();
+  else if(currentView==='week') renderWeek();
+  else if(currentView==='month') renderMonth();
+  else if(currentView==='list') renderList();
 }
 
 /* ================= MODAL: ADD / EDIT ================= */
@@ -1216,6 +1251,8 @@ function resetForm(){
   document.getElementById('commentInput').value = '';
   document.getElementById('recurrenceField').style.display = '';
   document.getElementById('recurrenceEndField').style.display = 'none';
+  document.getElementById('recurrencePreviewField').style.display = 'none';
+  document.getElementById('recurrencePreviewList').innerHTML = '';
   document.getElementById('f_recur').value = 'none';
   const recurEnd = new Date(); recurEnd.setMonth(recurEnd.getMonth()+3);
   document.getElementById('f_recur_end').value = ymd(recurEnd);
@@ -1237,6 +1274,7 @@ function openEditModal(ev){
   editingEvent = ev;
   document.getElementById('recurrenceField').style.display = 'none';
   document.getElementById('recurrenceEndField').style.display = 'none';
+  document.getElementById('recurrencePreviewField').style.display = 'none';
   document.getElementById('eventModalTitle').textContent = 'Modifier l\'événement';
   document.getElementById('eventId').value = ev.id;
   document.getElementById('f_titre').value = ev.titre;
@@ -1275,10 +1313,50 @@ function toggleDateFieldsMode(){
   debutInput.type = journee ? 'date' : 'datetime-local';
   finInput.type = journee ? 'date' : 'datetime-local';
 }
-document.getElementById('f_journee').addEventListener('change', toggleDateFieldsMode);
+document.getElementById('f_journee').addEventListener('change', ()=>{ toggleDateFieldsMode(); updateRecurrencePreview(); });
 document.getElementById('f_recur').addEventListener('change', (e)=>{
   document.getElementById('recurrenceEndField').style.display = e.target.value==='none' ? 'none' : '';
+  updateRecurrencePreview();
 });
+document.getElementById('f_recur_end').addEventListener('change', updateRecurrencePreview);
+document.getElementById('f_debut').addEventListener('change', updateRecurrencePreview);
+
+function updateRecurrencePreview(){
+  const previewField = document.getElementById('recurrencePreviewField');
+  const recurType = document.getElementById('f_recur').value;
+  const endStr = document.getElementById('f_recur_end').value;
+  const debutRaw = document.getElementById('f_debut').value;
+  if(recurType === 'none' || !endStr || !debutRaw){
+    previewField.style.display = 'none';
+    return;
+  }
+  const journee = document.getElementById('f_journee').checked;
+  const dateDebut = journee ? new Date(debutRaw + (debutRaw.length===10 ? 'T00:00' : '')) : new Date(debutRaw);
+  const endLimit = new Date(endStr + 'T23:59:59');
+  const occurrences = buildRecurrenceDates(dateDebut, null, recurType, endLimit);
+
+  const groups = {};
+  occurrences.forEach(o=>{
+    const wkKey = ymd(startOfWeek(o.debut));
+    (groups[wkKey] = groups[wkKey] || []).push(o.debut);
+  });
+
+  const list = document.getElementById('recurrencePreviewList');
+  list.innerHTML = '';
+  const fmt = new Intl.DateTimeFormat('fr-FR', {day:'numeric', month:'short'});
+  Object.keys(groups).sort().forEach(wkKey=>{
+    const dates = groups[wkKey];
+    const wkStart = new Date(wkKey);
+    const wkEnd = endOfWeek(wkStart);
+    const datesStr = dates.map(d=>fmt.format(d)).join(', ');
+    const row = document.createElement('label');
+    row.style.cssText = 'display:flex; align-items:flex-start; gap:8px; font-size:12.5px; cursor:pointer;';
+    row.innerHTML = `<input type="checkbox" class="recur-week-check" checked data-dates="${dates.map(d=>ymd(d)).join(',')}" style="margin-top:2px;">
+      <span>Semaine du ${fmt.format(wkStart)} au ${fmt.format(wkEnd)}<br><span style="color:var(--ink-faint);">${datesStr}</span></span>`;
+    list.appendChild(row);
+  });
+  previewField.style.display = '';
+}
 
 document.getElementById('f_file').addEventListener('change', async (e)=>{
   const file = e.target.files[0];
@@ -1305,6 +1383,9 @@ document.getElementById('deleteEvent').addEventListener('click', async ()=>{
   if(editingEvent && editingEvent.recurrence_group){
     const wantsSeries = confirm("Cet événement fait partie d'une série récurrente.\n\nOK = supprimer celui-ci et tous les suivants\nAnnuler = supprimer uniquement celui-ci");
     scope = wantsSeries ? 'series' : 'one';
+  } else if(editingEvent && editingEvent.import_batch){
+    const wantsAll = confirm(`Cet événement vient d'un import.\n\nOK = supprimer toutes les séances « ${editingEvent.titre} » de cet import\nAnnuler = supprimer uniquement celui-ci`);
+    scope = wantsAll ? 'import-title' : 'one';
   } else {
     if(!confirm('Supprimer cet événement ?')) return;
   }
@@ -1313,12 +1394,16 @@ document.getElementById('deleteEvent').addEventListener('click', async ()=>{
     ({error} = await sb.from(TABLE).delete()
       .eq('recurrence_group', editingEvent.recurrence_group)
       .gte('date_debut', editingEvent.date_debut));
+  } else if(scope === 'import-title'){
+    ({error} = await sb.from(TABLE).delete()
+      .eq('import_batch', editingEvent.import_batch)
+      .eq('titre', editingEvent.titre));
   } else {
     ({error} = await sb.from(TABLE).delete().eq('id', editingId));
   }
   if(error){ toast('Erreur de suppression'); console.error(error); return; }
   closeEventModal();
-  toast(scope==='series' ? 'Série supprimée' : 'Événement supprimé');
+  toast(scope==='series' ? 'Série supprimée' : (scope==='import-title' ? 'Séances supprimées' : 'Événement supprimé'));
 });
 
 document.getElementById('eventForm').addEventListener('submit', async (e)=>{
@@ -1370,8 +1455,14 @@ document.getElementById('eventForm').addEventListener('submit', async (e)=>{
       const endStr = document.getElementById('f_recur_end').value;
       if(!endStr){ toast('Choisis une date de fin pour la répétition'); return; }
       const endLimit = new Date(endStr + 'T23:59:59');
-      const occurrences = buildRecurrenceDates(dateDebut, dateFin, recurType, endLimit);
-      if(occurrences.length === 0){ toast('Aucune occurrence à créer, vérifie la date de fin'); return; }
+      let occurrences = buildRecurrenceDates(dateDebut, dateFin, recurType, endLimit);
+      const checkedBoxes = [...document.querySelectorAll('.recur-week-check')];
+      if(checkedBoxes.length > 0){
+        const includedDates = new Set();
+        checkedBoxes.filter(cb=>cb.checked).forEach(cb=>cb.dataset.dates.split(',').forEach(d=>includedDates.add(d)));
+        occurrences = occurrences.filter(o=>includedDates.has(ymd(o.debut)));
+      }
+      if(occurrences.length === 0){ toast('Aucune semaine sélectionnée à créer'); return; }
       const recurrenceGroup = (crypto.randomUUID ? crypto.randomUUID() : (Date.now()+'-'+Math.random().toString(36).slice(2)));
       const rows = occurrences.map(o=>({
         ...payload,
@@ -1494,6 +1585,7 @@ document.getElementById('confirmImport').addEventListener('click', async ()=>{
   const idxHeureFin = vHeureFin === '' ? -1 : parseInt(vHeureFin,10);
   const categorie = getImportSelectedCat();
   const catColor = (catById[categorie]||catById.autre).color;
+  const importBatch = (crypto.randomUUID ? crypto.randomUUID() : (Date.now()+'-'+Math.random().toString(36).slice(2)));
 
   const rowsToInsert = [];
   importRows.forEach(r=>{
@@ -1521,6 +1613,7 @@ document.getElementById('confirmImport').addEventListener('click', async ()=>{
       alerte:false, alerte_minutes:30, termine:false,
       ruche_id: activeRuche.id,
       cree_par: getPrenom() || null,
+      import_batch: importBatch,
     });
   });
 
@@ -1537,6 +1630,55 @@ document.getElementById('confirmImport').addEventListener('click', async ()=>{
   document.getElementById('importOverlay').classList.remove('open');
   toast(failed>0 ? `${inserted} importés, ${failed} en erreur` : `${inserted} événements importés !`);
 });
+
+/* ================= GESTION DES IMPORTS ================= */
+document.getElementById('manageImportsBtn').addEventListener('click', ()=>{
+  renderImportsList();
+  document.getElementById('manageImportsOverlay').classList.add('open');
+});
+document.getElementById('closeManageImports').addEventListener('click', ()=>{
+  document.getElementById('manageImportsOverlay').classList.remove('open');
+});
+function renderImportsList(){
+  const container = document.getElementById('importsList');
+  const batches = {};
+  events.forEach(e=>{
+    if(!e.import_batch) return;
+    if(!batches[e.import_batch]) batches[e.import_batch] = {count:0, min:null, max:null};
+    const b = batches[e.import_batch];
+    b.count++;
+    const d = new Date(e.date_debut);
+    if(!b.min || d<b.min) b.min = d;
+    if(!b.max || d>b.max) b.max = d;
+  });
+  const ids = Object.keys(batches);
+  if(ids.length===0){
+    container.innerHTML = `<p style="color:var(--ink-faint); font-size:13px;">Aucun import pour l'instant.</p>`;
+    return;
+  }
+  const fmt = new Intl.DateTimeFormat('fr-FR',{day:'numeric',month:'short',year:'numeric'});
+  container.innerHTML = ids.map(id=>{
+    const b = batches[id];
+    return `
+      <div style="border:1px solid var(--border); border-radius:var(--radius-sm); padding:10px 12px; display:flex; justify-content:space-between; align-items:center; gap:10px;">
+        <div>
+          <div style="font-weight:700; font-size:13.5px;">${b.count} événements</div>
+          <div style="font-size:12px; color:var(--ink-soft);">Du ${fmt.format(b.min)} au ${fmt.format(b.max)}</div>
+        </div>
+        <button type="button" class="btn danger" style="flex:0 0 auto; padding:8px 12px;" data-batch="${id}">Supprimer</button>
+      </div>
+    `;
+  }).join('');
+  container.querySelectorAll('button[data-batch]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      if(!confirm('Supprimer tous les événements de cet import ?')) return;
+      const {error} = await sb.from(TABLE).delete().eq('import_batch', btn.dataset.batch);
+      if(error){ toast('Erreur de suppression'); console.error(error); return; }
+      toast('Import supprimé');
+      renderImportsList();
+    });
+  });
+}
 
 /* ================= INIT ================= */
 renderCatChips();
